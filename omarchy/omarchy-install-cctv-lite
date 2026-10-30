@@ -8,7 +8,7 @@
 set -euo pipefail
 
 PREFIX="${CCTV_LITE_PREFIX:-$HOME/.local}"
-REPO="${CCTV_LITE_REPO:-cytracon/cctv-lite}"
+REPO="${CCTV_LITE_REPO:-cytracon/omarchy-cytracon-cctv-lite}"
 WEB="https://github.com/${REPO}"
 
 log() { printf '\033[36m[cctv-lite]\033[0m %s\n' "$*"; }

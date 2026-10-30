@@ -4,7 +4,7 @@
 
 GTK4 + libadwaita + GStreamer.
 
-`omarchy install cctv-lite` installs the viewer **and** enables the bar plugin ([cytracon/omarchy-cctv-lite](https://github.com/cytracon/omarchy-cctv-lite)).
+`omarchy install cctv-lite` installs the viewer **and** enables the bar plugin ([cytracon/omarchy-cytracon-bar-cctv-lite](https://github.com/cytracon/omarchy-cytracon-bar-cctv-lite)).
 
 ## Privacy
 
@@ -35,7 +35,7 @@ cctv-lite --sync-names      # optional ISAPI name refresh
 ## Plugin
 
 ```bash
-omarchy plugin add https://github.com/cytracon/omarchy-cctv-lite.git --enable
+omarchy plugin add https://github.com/cytracon/omarchy-cytracon-bar-cctv-lite.git --enable
 ```
 
 ## License
