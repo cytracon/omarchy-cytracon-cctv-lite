@@ -51,6 +51,8 @@ pacman -Q gst-plugins-good >/dev/null 2>&1 || need+=(gst-plugins-good)
 pacman -Q gst-plugins-bad >/dev/null 2>&1 || need+=(gst-plugins-bad)
 pacman -Q gst-libav >/dev/null 2>&1 || need+=(gst-libav)
 pacman -Q gst-plugin-gtk4 >/dev/null 2>&1 || need+=(gst-plugin-gtk4)
+pacman -Q gst-plugin-va >/dev/null 2>&1 || need+=(gst-plugin-va)
+pacman -Q libva >/dev/null 2>&1 || need+=(libva)
 
 if ((${#need[@]})); then
   echo "==> Missing packages: ${need[*]}"

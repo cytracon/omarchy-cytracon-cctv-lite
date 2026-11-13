@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import gi
@@ -147,7 +148,7 @@ class CameraCell(Gtk.Overlay):
         self.status.remove_css_class("playing")
         if status.startswith("error") or status.startswith("reconnect"):
             self.status.add_css_class("error")
-        elif status == "playing":
+        elif status == "playing" or status.startswith("playing"):
             self.status.add_css_class("playing")
 
 
@@ -161,6 +162,8 @@ class CctvWindow(Adw.ApplicationWindow):
         self._grid: Gtk.Grid | None = None
         self._fullscreen_cam: str | None = None
         self._detail_player: CameraPlayer | None = None
+        self._detail_epoch = 0
+        self._layout_epoch = 0
         self._start_idle_ids: list[int] = []
         self._settings_win: SettingsWindow | None = None
         self._suppress_layout_signal = False
@@ -400,30 +403,37 @@ class CctvWindow(Adw.ApplicationWindow):
         else:
             self.fullscreen()
 
+    def _visible_players(self) -> list[CameraPlayer]:
+        if self._fullscreen_cam and self._detail_player is not None:
+            return [self._detail_player]
+        return list(self.players.values())
+
     def _toggle_pause_all(self) -> None:
-        any_playing = any(p.status == "playing" for p in self.players.values())
+        players = self._visible_players()
+        any_playing = any(str(p.status).startswith("playing") for p in players)
         if any_playing:
-            for p in self.players.values():
-                p.pause()
+            for player in players:
+                player.pause()
+        elif self._fullscreen_cam and self._detail_player is not None:
+            self._detail_player.play()
         else:
             self._start_players_staggered()
 
     def _on_map(self) -> None:
         if self._background_suspended:
             return
-        if self.config.ui().get("pause_when_unmapped", True):
-            if self._fullscreen_cam and self._detail_player:
-                if self._detail_player.status in ("paused", "stopped", "idle", "error"):
-                    self._detail_player.hard_restart()
-            elif not self._fullscreen_cam:
-                # Fresh sessions after unmap — pause alone often breaks RTSP
-                need = any(
-                    p.status in ("paused", "stopped", "idle", "error")
-                    or str(p.status).startswith("error")
-                    for p in self.players.values()
-                )
-                if need:
-                    self._start_players_staggered_hard()
+        if not self.config.ui().get("pause_when_unmapped", True):
+            return
+
+        def stale(player: CameraPlayer) -> bool:
+            status = player.status
+            return status in ("paused", "stopped", "idle") or status.startswith("error")
+
+        if self._fullscreen_cam and self._detail_player:
+            if stale(self._detail_player):
+                self._detail_player.hard_restart()
+        elif any(stale(player) for player in self.players.values()):
+            self._start_players_staggered_hard()
 
     def _on_unmap(self) -> None:
         if self.config.ui().get("pause_when_unmapped", True):
@@ -505,35 +515,109 @@ class CctvWindow(Adw.ApplicationWindow):
                 pass
         self._start_idle_ids.clear()
 
-    def _clear_detail(self) -> None:
-        if self._detail_player is not None:
-            self._detail_player.destroy()
-            self._detail_player = None
-        child = self.single_picture_box.get_first_child()
+    def _empty_box(self, box: Gtk.Widget) -> None:
+        child = box.get_first_child()
         while child is not None:
             nxt = child.get_next_sibling()
-            self.single_picture_box.remove(child)
+            box.remove(child)
             child = nxt
+
+    def _restore_grid_chrome(self) -> None:
+        try:
+            self.header.set_visible(True)
+        except Exception:
+            pass
+        if self._detail_took_fullscreen:
+            self._detail_took_fullscreen = False
+            if self.is_fullscreen():
+                self.unfullscreen()
+        self.stack.set_visible_child_name("grid")
+        for cell in self.cells.values():
+            cell.set_selected(False)
+
+    def _when_released(
+        self,
+        players: list[CameraPlayer],
+        then: Callable[[], None],
+        timeout_ms: int = 1200,
+    ) -> None:
+        """NULL every pipeline, then run then(). A timeout continues anyway."""
+        if not players:
+            GLib.idle_add(lambda: then() or False)
+            return
+        pending = {id(player) for player in players}
+        fired = False
+
+        def fire():
+            nonlocal fired
+            if fired:
+                return False
+            fired = True
+            try:
+                then()
+            except Exception:
+                log.exception("release continuation failed")
+            return False
+
+        def one(player_id: int):
+            pending.discard(player_id)
+            if not pending:
+                GLib.idle_add(fire)
+
+        for player in players:
+            player.suspend(on_settled=lambda i=id(player): one(i))
+        GLib.timeout_add(timeout_ms, fire)
+
+    def _join_players(self, players: list[CameraPlayer], timeout: float = 2.0) -> None:
+        import time
+
+        deadline = time.monotonic() + timeout
+        for player in players:
+            left = deadline - time.monotonic()
+            if left > 0:
+                player.join_null(left)
 
     def teardown_players(self) -> None:
         self._clear_start_timers()
-        self._clear_detail()
+        self._detail_epoch += 1
         self._fullscreen_cam = None
-        for p in list(self.players.values()):
-            p.destroy()
+        players = list(self.players.values())
+        if self._detail_player is not None:
+            players.append(self._detail_player)
+        self._detail_player = None
         self.players.clear()
         self.cells.clear()
-        child = self.grid_host.get_first_child()
-        while child is not None:
-            nxt = child.get_next_sibling()
-            self.grid_host.remove(child)
-            child = nxt
+        for player in players:
+            player.destroy()
+        self._join_players(players)
+        self._empty_box(self.grid_host)
+        self._empty_box(self.single_picture_box)
         self._grid = None
 
     def build_layout(self) -> None:
-        self.show_grid()
-        self.teardown_players()
+        self._layout_epoch += 1
+        epoch = self._layout_epoch
+        self._detail_epoch += 1
+        self._fullscreen_cam = None
+        self._clear_start_timers()
+        self._restore_grid_chrome()
+        old = list(self.players.values())
+        if self._detail_player is not None:
+            old.append(self._detail_player)
+        self.players = {}
+        self.cells = {}
+        self._detail_player = None
 
+        def populate():
+            if epoch != self._layout_epoch:
+                return
+            self._empty_box(self.grid_host)
+            self._empty_box(self.single_picture_box)
+            self._fill_grid()
+
+        self._when_released(old, populate, timeout_ms=1500)
+
+    def _fill_grid(self) -> None:
         layout = self.config.active_layout()
         quality = self._current_quality() or layout.quality
         show_labels = bool(self.config.ui().get("show_labels", True))
@@ -610,9 +694,12 @@ class CctvWindow(Adw.ApplicationWindow):
                 self._start_idle_ids.append(sid)
 
     def reconnect_all(self) -> None:
-        """Full rebuild of every grid pipeline (fresh RTSP sessions)."""
+        """Fresh RTSP sessions for the streams that are actually on screen."""
         self._clear_start_timers()
         if self._background_suspended:
+            return
+        if self._fullscreen_cam and self._detail_player is not None:
+            self._detail_player.hard_restart()
             return
         for p in self.players.values():
             p.stop()
@@ -664,18 +751,19 @@ class CctvWindow(Adw.ApplicationWindow):
         return msg
 
     def _open_single(self, player: CameraPlayer) -> None:
-        """Open main-stream detail view. Grid streams keep running underneath."""
+        """Main stream of one camera. Other RTSP sessions are closed first."""
         cam = self.config.camera_map().get(player.cam_id)
         if cam is None:
             return
+        self._clear_start_timers()
+        self._detail_epoch += 1
+        epoch = self._detail_epoch
+        self._fullscreen_cam = player.cam_id
         for cell in self.cells.values():
             cell.set_selected(cell.player.cam_id == player.cam_id)
 
-        # Drop previous detail only — do NOT stop grid (avoids empty rebuild)
-        self._clear_detail()
-
-        main_url = self.config.url_for_camera(cam, "main")
-        self._fullscreen_cam = player.cam_id
+        prev = self._detail_player
+        self._detail_player = None
         self.stack.set_visible_child_name("single")
         try:
             self.header.set_visible(False)
@@ -686,20 +774,35 @@ class CctvWindow(Adw.ApplicationWindow):
             self.fullscreen()
         else:
             self._detail_took_fullscreen = False
+        targets = list(self.players.values())
+        if prev is not None:
+            targets.append(prev)
 
+        def start():
+            if epoch != self._detail_epoch:
+                return
+            self._mount_detail(cam, epoch)
+
+        # Suspend first so paintables are cleared before the placeholder
+        # unparents the previous large-view widget.
+        self._when_released(targets, start, timeout_ms=1200)
+        self._set_detail_placeholder(f"{cam.name}\nClosing other cameras…")
+
+    def _mount_detail(self, cam, epoch: int) -> None:
+        if epoch != self._detail_epoch:
+            return
+        self._empty_box(self.single_picture_box)
         detail = CameraPlayer(
             cam_id=f"{cam.id}-detail",
             name=cam.name,
-            url=main_url,
+            url=self.config.url_for_camera(cam, "main"),
             rtsp_opts=self.config.rtsp(),
         )
         overlay = Gtk.Overlay()
         overlay.set_hexpand(True)
         overlay.set_vexpand(True)
         overlay.set_child(detail.widget)
-        label = Gtk.Label(
-            label=f"{cam.name}  ·  main  ·  click to return", xalign=0
-        )
+        label = Gtk.Label(label=f"{cam.name}  ·  main  ·  click to return", xalign=0)
         label.add_css_class("camera-label")
         label.set_halign(Gtk.Align.START)
         label.set_valign(Gtk.Align.START)
@@ -726,24 +829,21 @@ class CctvWindow(Adw.ApplicationWindow):
             self._set_detail_placeholder(f"{cam.name}: start failed — {e}")
             return
 
-        def _start(_detail=detail):
-            if self._background_suspended or self._detail_player is not _detail:
+        def _start(_detail=detail, _epoch=epoch):
+            if (
+                self._background_suspended
+                or self._detail_player is not _detail
+                or _epoch != self._detail_epoch
+            ):
                 return False
-            try:
-                _detail._sync_window_size()
-                _detail.play()
-            except Exception as e:
-                log.error("detail play failed: %s", e)
+            _detail.play()
             return False
 
+        # Widget is in the tree, so the first frame is scaled to the real window.
         GLib.timeout_add(50, _start)
 
     def _set_detail_placeholder(self, text: str) -> None:
-        child = self.single_picture_box.get_first_child()
-        while child is not None:
-            nxt = child.get_next_sibling()
-            self.single_picture_box.remove(child)
-            child = nxt
+        self._empty_box(self.single_picture_box)
         lab = Gtk.Label(label=text)
         lab.add_css_class("placeholder")
         lab.set_hexpand(True)
@@ -751,21 +851,24 @@ class CctvWindow(Adw.ApplicationWindow):
         self.single_picture_box.append(lab)
 
     def show_grid(self) -> None:
+        self._detail_epoch += 1
+        epoch = self._detail_epoch
         self._fullscreen_cam = None
-        # Only tear down the extra main-stream detail player
-        self._clear_detail()
-        try:
-            self.header.set_visible(True)
-        except Exception:
-            pass
-        if self._detail_took_fullscreen:
-            self._detail_took_fullscreen = False
-            if self.is_fullscreen():
-                self.unfullscreen()
-        self.stack.set_visible_child_name("grid")
-        for cell in self.cells.values():
-            cell.set_selected(False)
-        # Grid pipelines were kept running — nothing to rebuild
+        detail = self._detail_player
+        self._detail_player = None
+        self._restore_grid_chrome()
+
+        def restart():
+            if epoch != self._detail_epoch:
+                return
+            self._empty_box(self.single_picture_box)
+            if self.players:
+                self._start_players_staggered()
+
+        if detail is None:
+            restart()
+        else:
+            detail.destroy(on_dead=restart)
 
     def destroy_all(self) -> None:
         if self._settings_win is not None:

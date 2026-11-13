@@ -251,7 +251,7 @@ class SettingsWindow(Adw.PreferencesWindow):
         self.hw_row = _switch_row(
             "Prefer hardware decode",
             bool(rtsp.get("use_hardware_decode", True)),
-            "Use VA-API when available (AMD/Intel)",
+            "Decode and scale on the GPU (VA-API, RX 7600 / Intel)",
         )
 
         group.add(self.latency_row)

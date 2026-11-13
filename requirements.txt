@@ -1,5 +1,5 @@
 # CCTV Lite uses distro packages on Omarchy / Arch:
 #   python python-gobject python-yaml gtk4 libadwaita
 #   gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad
-#   gst-libav gst-plugin-gtk4
+#   gst-libav gst-plugin-gtk4 gst-plugin-va libva
 # No pip packages required.
