@@ -296,7 +296,7 @@ class CameraPlayer:
             return
         if self._pipeline is None:
             try:
-                self._build()
+                self.build()
             except Exception as exc:
                 log.error("build failed %s: %s", self.cam_id, exc)
                 self._set_status(f"error: {exc}")
@@ -485,6 +485,16 @@ class CameraPlayer:
             except Exception:
                 pass
         self._bus = None
+
+    def build(self) -> None:
+        """Create the pipeline and attach the paintable. Does not start playback.
+
+        The large view calls this after the widget is in the tree, then play()
+        a moment later, so the sink sees the real allocation.
+        """
+        if self._pipeline is not None or self._nulling:
+            return
+        self._build()
 
     def _build(self) -> None:
         safe_id = "".join(ch if ch.isalnum() else "-" for ch in self.cam_id)

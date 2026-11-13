@@ -11,6 +11,7 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gst  # noqa: E402
 
 from cctv_lite.player import (
+    CameraPlayer,
     classify_rtp_caps,
     fit_even,
     gst_set_state_released,
@@ -95,6 +96,29 @@ class NullTeardown(unittest.TestCase):
         for _ in range(8):
             once()
         self.assertEqual(errors, [])
+
+
+class DetailBuild(unittest.TestCase):
+    def test_build_prepares_pipeline_without_playing(self):
+        """The large view calls CameraPlayer.build() before play()."""
+        player = CameraPlayer(
+            cam_id="gate-detail",
+            name="Gate",
+            url="rtsp://127.0.0.1/unused",
+            rtsp_opts={"use_hardware_decode": False, "protocols": "tcp"},
+        )
+        try:
+            player.build()
+            pipe = player._pipeline
+            self.assertIsNotNone(pipe)
+            self.assertEqual(player.status, "ready")
+            _ret, state, _pending = pipe.get_state(0)
+            self.assertEqual(state, Gst.State.NULL)
+            player.build()
+            self.assertIs(player._pipeline, pipe)
+        finally:
+            player.destroy()
+            player.join_null(2)
 
 
 if __name__ == "__main__":
